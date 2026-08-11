@@ -85,8 +85,8 @@ app = FastAPI(title="GPT-SoVITS ONNX API")
 
 class SpeechRequest(BaseModel):
     input: str
-    voice: str = "default"
-    model: str = "gpt-sovits-v2"
+    model: str = "default"
+    voice: Optional[str] = None
     response_format: str = "wav"
     speed: Optional[float] = None
     top_k: Optional[int] = None
@@ -106,18 +106,39 @@ def audio_array_to_wav_chunk(audio_data: np.ndarray, sr: int):
 
 @app.post("/v1/audio/speech")
 async def text_to_speech(request: SpeechRequest):
-    voice_config = voice_manager.get_voice(request.voice)
+    # Resolve voice config: model is primary selector,
+    # voice is fallback for backward compatibility
+    voice_name = request.model
+    try:
+        voice_config = voice_manager.get_voice(voice_name)
+    except HTTPException as e:
+        if e.status_code == 404 and request.voice and request.voice != voice_name:
+            voice_name = request.voice
+            voice_config = voice_manager.get_voice(voice_name)
+        else:
+            raise
+
     defaults = voice_config.get("defaults", {})
-    
+
     speed = request.speed if request.speed is not None else defaults.get("speed", 1.0)
     top_k = request.top_k if request.top_k is not None else defaults.get("top_k", 15)
     temperature = request.temperature if request.temperature is not None else defaults.get("temperature", 1.0)
     pause_length = request.pause_length if request.pause_length is not None else defaults.get("pause_length", 0.3)
     noise_scale = request.noise_scale if request.noise_scale is not None else defaults.get("noise_scale", 0.35)
-    
-    ref_audio = request.ref_audio or voice_config.get("ref_audio")
-    ref_text = request.ref_text or voice_config.get("ref_text")
-    ref_lang = request.ref_lang or voice_config.get("ref_lang", "zh")
+
+    # Resolve reference audio: voice style → request override → config default
+    ref_audios = voice_config.get("ref_audios", {})
+    if request.voice and request.voice in ref_audios:
+        ref_audio = ref_audios[request.voice].get("ref_audio", "")
+        ref_text = ref_audios[request.voice].get("ref_text", "")
+        ref_lang = ref_audios[request.voice].get("ref_lang", "zh")
+        ref_audio = request.ref_audio or ref_audio
+        ref_text = request.ref_text or ref_text
+        ref_lang = request.ref_lang or ref_lang
+    else:
+        ref_audio = request.ref_audio or voice_config.get("ref_audio")
+        ref_text = request.ref_text or voice_config.get("ref_text")
+        ref_lang = request.ref_lang or voice_config.get("ref_lang", "zh")
 
     onnx_path = voice_config.get("onnx_path")
     if not onnx_path:
@@ -158,13 +179,31 @@ async def text_to_speech(request: SpeechRequest):
 
 @app.get("/v1/models")
 async def list_models():
-    models_list = [{"id": name, "object": "model", "created": 1700000000, "owned_by": "gpt-sovits-onnx", "description": config.get("description", "")} 
-                   for name, config in voice_manager.voices.items()]
+    models_list = []
+    for name, config in voice_manager.voices.items():
+        ref_audios = config.get("ref_audios", {})
+        model_info = {
+            "id": name,
+            "object": "model",
+            "created": 1700000000,
+            "owned_by": "gpt-sovits-onnx",
+            "description": config.get("description", ""),
+        }
+        if ref_audios:
+            model_info["available_voices"] = list(ref_audios.keys())
+        models_list.append(model_info)
     return {"object": "list", "data": models_list}
 
 @app.get("/v1/voices")
 async def list_voices():
-    return voice_manager.voices
+    """Return voice configurations with available styles."""
+    result = {}
+    for name, config in voice_manager.voices.items():
+        entry = dict(config)
+        ref_audios = config.get("ref_audios", {})
+        entry["available_voices"] = list(ref_audios.keys()) if ref_audios else []
+        result[name] = entry
+    return result
 
 @app.post("/v1/voices/reload")
 async def reload_voices():

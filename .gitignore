@@ -8,3 +8,8 @@
 /pretrained_models
 /onnx_export/
 /assets
+venv/
+.venv/
+__pycache__
+user.dict
+userdict.md5
