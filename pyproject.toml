@@ -1,0 +1,89 @@
+[project]
+name = "gpt-sovits-minimal-inference"
+version = "1.0.0"
+description = "High-performance inference engine for GPT-SoVITS"
+requires-python = ">=3.10"
+dependencies = [
+    # Core ML / Audio
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "numpy<2.0",
+    "scipy",
+    "librosa==0.10.2",
+    "soundfile",
+    "numba",
+    "einops",
+
+    # Model / Training
+    "pytorch-lightning>=2.4",
+    "torchmetrics<=1.5",
+    "x_transformers",
+    "rotary_embedding_torch",
+    "transformers>=4.43,<=4.50",
+    "peft",
+    "sentencepiece",
+    "tokenizers>=0.13,<1",
+    "huggingface_hub>=0.13",
+    "ctranslate2>=4.0,<5",
+    "tqdm",
+
+    # API Server
+    "fastapi[standard]>=0.115.2",
+    "pydantic<=2.10.6",
+    "gradio<5",
+    "tensorboard",
+
+    # ONNX / TensorRT
+    "onnxruntime-gpu; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
+    "onnxruntime; platform_machine == 'aarch64' or platform_machine == 'arm64'",
+    "onnxsim",
+    "onnxconverter-common",
+
+    # Text Processing
+    "pypinyin",
+    "opencc",
+    "cn2an",
+    "pyopenjtalk>=0.4.1",
+    "g2p_en",
+    "jieba",
+    "jieba_fast",
+    "split-lang",
+    "fast_langdetect>=0.3.1",
+    "wordsegment",
+    "ToJyutping",
+    "g2pk2",
+    "ko_pron",
+    "python_mecab_ko; sys_platform != 'win32'",
+    "regex",
+    "gruut",
+    "jamo",
+    "nltk",
+    "inflect",
+    "chardet",
+
+    # Utilities
+    "PyYAML",
+    "pandas",
+    "packaging",
+    "matplotlib",
+    "typeguard",
+    "requests",
+    "psutil",
+    "ffmpeg-python",
+    "av>=11",
+    "modelscope==1.10.0",
+]
+
+[tool.uv]
+no-binary-package = ["opencc"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
+torchaudio = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
