@@ -256,11 +256,11 @@ class GPTSoVITSInference:
             langlist.append("en")
             textlist.append(text)
         elif language == "auto":
-            for tmp in LangSegmenter.getTexts(text, default_lang=default_lang):
+            for tmp in LangSegmenter.getTexts(text):
                 langlist.append(tmp["lang"])
                 textlist.append(tmp["text"])
         elif language == "auto_yue":
-            for tmp in LangSegmenter.getTexts(text, default_lang=default_lang):
+            for tmp in LangSegmenter.getTexts(text):
                 if tmp["lang"] == "zh":
                     tmp["lang"] = "yue"
                 langlist.append(tmp["lang"])
