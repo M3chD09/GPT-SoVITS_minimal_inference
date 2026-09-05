@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-apache-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
-[![GPU](https://img.shields.io/badge/CUDA-12.6+-orange.svg)](https://developer.nvidia.com/cuda-zone)
+[![GPU](https://img.shields.io/badge/CUDA-13.0-orange.svg)](https://developer.nvidia.com/cuda-zone)
 [![ONNX](https://img.shields.io/badge/ONNX-Optimized-brightgreen.svg)](https://onnxruntime.ai/)
 [![TensorRT](https://img.shields.io/badge/TensorRT-Enabled-76B900.svg)](https://developer.nvidia.com/tensorrt)
 
@@ -83,6 +83,23 @@ Original **Lookahead + History Window** mechanism:
   in traditional streaming inference.
 
 ---
+
+## 📦 Installation
+
+Requires Python 3.10–3.12 and [uv](https://docs.astral.sh/uv/).
+
+```bash
+# CPU build (default)
+uv sync --extra cpu
+
+# CUDA 13.0 build
+uv sync --extra cu130
+
+# CUDA 13.2 build
+uv sync --extra cu132
+```
+
+> Switching builds: simply run the other `uv sync` command — uv will replace the installed torch build automatically.
 
 ## 🏁 Quick Start
 

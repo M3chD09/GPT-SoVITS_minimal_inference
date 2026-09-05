@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-apache-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10+-green.svg)](https://www.python.org/)
-[![GPU](https://img.shields.io/badge/CUDA-12.6+-orange.svg)](https://developer.nvidia.com/cuda-zone)
+[![GPU](https://img.shields.io/badge/CUDA-13.0-orange.svg)](https://developer.nvidia.com/cuda-zone)
 [![ONNX](https://img.shields.io/badge/ONNX-Optimized-brightgreen.svg)](https://onnxruntime.ai/)
 [![TensorRT](https://img.shields.io/badge/TensorRT-Enabled-76B900.svg)](https://developer.nvidia.com/tensorrt)
 
@@ -79,6 +79,23 @@ KV-Cache optimization, and zero-copy streaming.
 * 在 Chunk 边界进行线性加权融合 (Cross-Fade)，彻底消除传统流式推理常见的“咔哒”声。
 
 ---
+
+## 📦 安装 (Installation)
+
+需要 Python 3.10–3.12 与 [uv](https://docs.astral.sh/uv/)。
+
+```bash
+# CPU 版(默认)
+uv sync --extra cpu
+
+# CUDA 13.0 版
+uv sync --extra cu130
+
+# CUDA 13.2 版
+uv sync --extra cu132
+```
+
+> 切换版本:直接运行另一条 `uv sync` 命令即可,uv 会自动替换已安装的 torch 构建版本。
 
 ## 🏁 快速开始 (Quick Start)
 

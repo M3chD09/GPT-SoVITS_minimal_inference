@@ -2,12 +2,10 @@
 name = "gpt-sovits-minimal-inference"
 version = "1.0.0"
 description = "High-performance inference engine for GPT-SoVITS"
-requires-python = ">=3.10"
+# numpy<2.0 has no Python 3.13 wheels and ml-dtypes is also capped at < '3.13', so 3.13+ is not supported
+requires-python = ">=3.10,<3.13"
 dependencies = [
     # Core ML / Audio
-    "torch",
-    "torchvision",
-    "torchaudio",
     "numpy<2.0",
     "scipy",
     "librosa==0.10.2",
@@ -35,8 +33,7 @@ dependencies = [
     "tensorboard",
 
     # ONNX / TensorRT
-    "onnxruntime-gpu; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
-    "onnxruntime; platform_machine == 'aarch64' or platform_machine == 'arm64'",
+    "onnxruntime",
     # >=0.5.1 required for onnx>=1.19 dtype map (float4_e2m1fn / float8_e8m0fnu); ml_dtypes 0.5.4+ needs numpy 2.1 on py3.13+, and 0.6+ requires numpy>=2.0 (pep398) always — both conflict with the locked numpy<2.0, so cap at 0.5.3
     "ml-dtypes>=0.5.1,<0.5.4; python_full_version < '3.13'",
     "onnxsim",
@@ -77,15 +74,69 @@ dependencies = [
     "modelscope==1.10.0",
 ]
 
+[project.optional-dependencies]
+# CPU PyTorch build (default, recommended): uv sync --extra cpu
+cpu = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+]
+# CUDA 13.0 PyTorch build (older drivers): uv sync --extra cu130
+# CUDA 13.2 PyTorch build (drivers >= 580): uv sync --extra cu132
+# Windows wheels bundle the CUDA runtime; Linux wheels pull nvidia-* pip packages as dependencies
+cu130 = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "onnxruntime-gpu; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
+]
+cu132 = [
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "onnxruntime-gpu; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
+]
+
 [tool.uv]
 no-binary-package = ["opencc"]
+# cpu / cu130 / cu132 are mutually exclusive, selected explicitly via --extra
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cu130" },
+        { extra = "cu132" },
+    ],
+]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu130" }
-torchvision = { index = "pytorch-cu130" }
-torchaudio = { index = "pytorch-cu130" }
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "cu130" },
+    { index = "pytorch-cu132", extra = "cu132" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "cu130" },
+    { index = "pytorch-cu132", extra = "cu132" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu130", extra = "cu130" },
+    # cu132 index has no torchaudio >= 2.3 builds; PyPI torchaudio 2.11.0 pairs with torch 2.14.0
+    # and its ops (Resample/MelSpectrogram) are pure torch, so the default index is used there
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
