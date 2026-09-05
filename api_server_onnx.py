@@ -92,6 +92,7 @@ class SpeechRequest(BaseModel):
     top_k: Optional[int] = None
     top_p: Optional[float] = None
     temperature: Optional[float] = None
+    repetition_penalty: Optional[float] = None
     text_lang: str = "auto"
     chunk_length: int = 24
     pause_length: Optional[float] = None
@@ -125,6 +126,7 @@ async def text_to_speech(request: SpeechRequest):
     temperature = request.temperature if request.temperature is not None else defaults.get("temperature", 1.0)
     pause_length = request.pause_length if request.pause_length is not None else defaults.get("pause_length", 0.3)
     noise_scale = request.noise_scale if request.noise_scale is not None else defaults.get("noise_scale", 0.35)
+    repetition_penalty = request.repetition_penalty if request.repetition_penalty is not None else defaults.get("repetition_penalty", 1.35)
 
     # Resolve reference audio: voice style → request override → config default
     ref_audios = voice_config.get("ref_audios", {})
@@ -160,7 +162,8 @@ async def text_to_speech(request: SpeechRequest):
             gen = engine.infer_stream(
                 ref_wav_path=abs_ref_audio, prompt_text=ref_text, prompt_lang=ref_lang,
                 text=request.input, text_lang=request.text_lang, top_k=top_k,
-                temperature=temperature, speed=speed, chunk_length=request.chunk_length,
+                temperature=temperature, repetition_penalty=repetition_penalty,
+                speed=speed, chunk_length=request.chunk_length,
                 noise_scale=noise_scale, pause_length=pause_length
             )
             sr = engine.hps["data"]["sampling_rate"]

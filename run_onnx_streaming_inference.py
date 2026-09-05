@@ -45,17 +45,57 @@ def split_text(text):
         merged.append(current)
     return merged
 
-def sample_topk(topk_values, topk_indices, temperature=1.0):
-    if temperature != 1.0:
-        topk_values = topk_values / temperature
-    topk_values = topk_values - np.max(topk_values, axis=-1, keepdims=True)
-    probs = np.exp(topk_values)
+def sample_topk(topk_values, topk_indices, temperature=1.0, top_k=None,
+                visited_mask=None, repetition_penalty=1.0,
+                suppress_eos=False, eos_id=1024):
+    """Mirror of GPT_SoVITS/AR/models/utils.py logits_to_probs + sample,
+    operating on the in-graph top-50 candidate set (raw, unpenalized logits
+    exported by torch.topk). Because the repetition penalty only ever lowers
+    logits, the penalized top-k of the full vocab is always a subset of the
+    raw top-50, so this reproduces the PyTorch sampling distribution exactly.
+
+    topk_values: (B, 50) raw logits, sorted descending (torch.topk output).
+    visited_mask: bool array of shape (vocab_size,), True for tokens present
+        in prompt_semantic + generated history (PyTorch penalizes over full y).
+    Returns (samples (B,1) int64, argmax_id (B,) int64) where argmax_id is the
+    full-vocab argmax over penalized logits (mirrors t2s_model.py:939).
+    """
+    vals = topk_values.astype(np.float32).copy()
+
+    # 1. Repetition penalty — mirror utils.py:159-167 exactly
+    if visited_mask is not None and repetition_penalty != 1.0:
+        hit = visited_mask[topk_indices]  # (B, 50) bool
+        score = np.where(vals < 0, vals * repetition_penalty, vals / repetition_penalty)
+        vals = np.where(hit, score, vals)
+
+    # 2. Temperature (applied AFTER penalty, matching utils.py:181)
+    vals = vals / max(temperature, 1e-5)
+
+    # 3. EOS suppression — host equivalent of t2s_model.py:926-927
+    if suppress_eos:
+        vals = np.where(topk_indices == eos_id, -np.inf, vals)
+
+    # Full-vocab argmax (computed before top-k truncation, after masking);
+    # penalty only lowers logits so the argmax always lies in the raw top-50
+    argmax_id = topk_indices[np.arange(vals.shape[0]), np.argmax(vals, axis=-1)]
+
+    # 4. Top-k filter (utils.py:183-186); penalty may have reordered candidates
+    if top_k is not None and top_k < vals.shape[-1]:
+        order = np.argsort(-vals, axis=-1, kind="stable")[:, :top_k]
+        vals = np.take_along_axis(vals, order, axis=-1)
+        cand_idx = np.take_along_axis(topk_indices, order, axis=-1)
+    else:
+        cand_idx = topk_indices
+
+    # 5. Softmax + sample
+    vals = vals - np.max(vals, axis=-1, keepdims=True)
+    probs = np.exp(vals)
     probs /= np.sum(probs, axis=-1, keepdims=True)
     samples = []
     for i in range(probs.shape[0]):
         choice = np.random.choice(len(probs[i]), p=probs[i])
-        samples.append(topk_indices[i, choice])
-    return np.array(samples, dtype=np.int64)[:, None]
+        samples.append(cand_idx[i, choice])
+    return np.array(samples, dtype=np.int64)[:, None], argmax_id
 
 class GPTSoVITS_ONNX_Streaming_Inference:
     def __init__(self, onnx_dir, bert_path, device="cpu", gpu_mem_limit=None):
@@ -311,7 +351,8 @@ class GPTSoVITS_ONNX_Streaming_Inference:
         return onnxruntime.OrtValue.ortvalue_from_numpy(data, "cuda", 0)
 
     def infer_stream(self, ref_wav_path, prompt_text, prompt_lang, text, text_lang,
-                     top_k=15, temperature=1.0, noise_scale=0.35, speed=1.0, chunk_length=24, pause_length=0.3):
+                     top_k=15, temperature=1.0, repetition_penalty=1.35,
+                     noise_scale=0.35, speed=1.0, chunk_length=24, pause_length=0.3):
         
         t_ref_audio = 0.0
         t_text_proc = 0.0
@@ -380,15 +421,39 @@ class GPTSoVITS_ONNX_Streaming_Inference:
             })
             t_gpt_enc += time.perf_counter() - t_start
             
-            current_token = sample_topk(topk_v, topk_i, temperature=temperature)
+            # Visited mask for repetition penalty over prompt + generated tokens
+            # (PyTorch penalizes over y = prompts + generated, t2s_model.py:852,930)
+            visited_mask = np.zeros(1025, dtype=bool)
+            visited_mask[prompt_semantic.flatten()] = True
+
+            current_token, _ = sample_topk(topk_v, topk_i, temperature=temperature, top_k=top_k,
+                                           visited_mask=visited_mask, repetition_penalty=repetition_penalty,
+                                           suppress_eos=True)
+            if current_token[0, 0] == 1024:
+                continue
             tokens = [current_token]
-            
-            # IO Binding setup for step
-            io_binding = self.sess_gpt_step.io_binding()
-            k_cache_ort = [self._to_ort(k_cache.astype(self.cache_dtype)), self._to_ort(k_cache.astype(self.cache_dtype))]
-            v_cache_ort = [self._to_ort(v_cache.astype(self.cache_dtype)), self._to_ort(v_cache.astype(self.cache_dtype))]
-            x_len_ort = onnxruntime.OrtValue.ortvalue_from_numpy(x_len.astype(np.int64))
-            y_len_ort = onnxruntime.OrtValue.ortvalue_from_numpy(y_len.astype(np.int64))
+            visited_mask[int(current_token[0, 0])] = True
+
+            # Step decode loop. On CUDA we use io_binding with ping-pong buffers for
+            # zero-copy cache handling. On CPU, binding the [24,1,1000,512] cache
+            # outputs to user OrtValue buffers triggers an ORT bug (the output buffer
+            # registration corrupts internal tensor addressing — Gather reads
+            # out-of-bounds indices / wrong results / segfaults, see
+            # docs/onnx_cpu_issue.md), so CPU falls back to plain sess.run, where ORT
+            # allocates the new cache internally (this path is numerically verified
+            # against PyTorch).
+            use_io_binding = self.device == "cuda"
+            io_binding = self.sess_gpt_step.io_binding() if use_io_binding else None
+            if use_io_binding:
+                k_cache_ort = [self._to_ort(k_cache.astype(self.cache_dtype)), self._to_ort(k_cache.astype(self.cache_dtype))]
+                v_cache_ort = [self._to_ort(v_cache.astype(self.cache_dtype)), self._to_ort(v_cache.astype(self.cache_dtype))]
+                x_len_ort = onnxruntime.OrtValue.ortvalue_from_numpy(x_len.astype(np.int64))
+                y_len_ort = onnxruntime.OrtValue.ortvalue_from_numpy(y_len.astype(np.int64))
+            else:
+                k_cache_np = k_cache.astype(self.cache_dtype)
+                v_cache_np = v_cache.astype(self.cache_dtype)
+                x_len_np = x_len.astype(np.int64)
+                y_len_np = y_len.astype(np.int64)
 
             history_tokens = None
             chunk_queue = []
@@ -420,27 +485,51 @@ class GPTSoVITS_ONNX_Streaming_Inference:
             chunk_idx_in_seg = 0
             for i in range(1500):
                 steps += 1
-                src_idx = i % 2
-                dst_idx = (i + 1) % 2
-                
-                io_binding.bind_ortvalue_input("samples", self._to_ort(current_token.astype(np.int64)))
-                io_binding.bind_ortvalue_input("k_cache", k_cache_ort[src_idx])
-                io_binding.bind_ortvalue_input("v_cache", v_cache_ort[src_idx])
-                io_binding.bind_ortvalue_input("idx", onnxruntime.OrtValue.ortvalue_from_numpy(np.array([i], dtype=np.int64)))
-                io_binding.bind_ortvalue_input("x_len", x_len_ort)
-                io_binding.bind_ortvalue_input("y_len", y_len_ort)
-                io_binding.bind_output("topk_values", "cpu")
-                io_binding.bind_output("topk_indices", "cpu")
-                io_binding.bind_ortvalue_output("k_cache_new", k_cache_ort[dst_idx])
-                io_binding.bind_ortvalue_output("v_cache_new", v_cache_ort[dst_idx])
-                
-                self.sess_gpt_step.run_with_iobinding(io_binding)
-                outputs = io_binding.get_outputs()
-                current_token = sample_topk(outputs[0].numpy(), outputs[1].numpy(), temperature=temperature)
-                
-                if current_token[0, 0] == 1024: break
+
+                if use_io_binding:
+                    src_idx = i % 2
+                    dst_idx = (i + 1) % 2
+
+                    io_binding.bind_ortvalue_input("samples", self._to_ort(current_token.astype(np.int64)))
+                    io_binding.bind_ortvalue_input("k_cache", k_cache_ort[src_idx])
+                    io_binding.bind_ortvalue_input("v_cache", v_cache_ort[src_idx])
+                    io_binding.bind_ortvalue_input("idx", onnxruntime.OrtValue.ortvalue_from_numpy(np.array([i], dtype=np.int64)))
+                    io_binding.bind_ortvalue_input("x_len", x_len_ort)
+                    io_binding.bind_ortvalue_input("y_len", y_len_ort)
+                    io_binding.bind_output("topk_values", "cpu")
+                    io_binding.bind_output("topk_indices", "cpu")
+                    io_binding.bind_ortvalue_output("k_cache_new", k_cache_ort[dst_idx])
+                    io_binding.bind_ortvalue_output("v_cache_new", v_cache_ort[dst_idx])
+
+                    self.sess_gpt_step.run_with_iobinding(io_binding)
+                    outputs = io_binding.get_outputs()
+                    topk_v_arr, topk_i_arr = outputs[0].numpy(), outputs[1].numpy()
+                else:
+                    outputs = self.sess_gpt_step.run(None, {
+                        "samples": current_token.astype(np.int64),
+                        "k_cache": k_cache_np, "v_cache": v_cache_np,
+                        "idx": np.array([i], dtype=np.int64),
+                        "x_len": x_len_np, "y_len": y_len_np,
+                    })
+                    topk_v_arr, topk_i_arr = outputs[0], outputs[1]
+                    k_cache_np, v_cache_np = outputs[2], outputs[3]
+                # Encoder token is PyTorch idx 0; token sampled at loop iter i is idx i+1
+                step_idx = i + 1
+                sampled, argmax_id = sample_topk(topk_v_arr, topk_i_arr,
+                                                 temperature=temperature, top_k=top_k,
+                                                 visited_mask=visited_mask,
+                                                 repetition_penalty=repetition_penalty,
+                                                 suppress_eos=(step_idx < 11))
+                # t2s_model.py:939: argmax(logits)==EOS OR samples==EOS; the
+                # just-sampled token is discarded and generation stops
+                if argmax_id[0] == 1024 or sampled[0, 0] == 1024:
+                    break
+                current_token = sampled
                 tokens.append(current_token)
+                visited_mask[int(current_token[0, 0])] = True
                 token_counter += 1
+                if len(tokens) >= 1500:
+                    break
 
                 # Streaming split logic
                 is_split = False
@@ -558,6 +647,9 @@ if __name__ == "__main__":
     parser.add_argument("--lang", default="zh")
     parser.add_argument("--bert_path", default="pretrained_models/chinese-roberta-wwm-ext-large")
     parser.add_argument("--pause_length", type=float, default=0.3)
+    parser.add_argument("--top_k", type=int, default=15)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--repetition_penalty", type=float, default=1.35)
     parser.add_argument("--gpu_mem_limit", type=float, default=None, help="限制最大显存使用 (GB)")
     args = parser.parse_args()
 
@@ -567,7 +659,10 @@ if __name__ == "__main__":
         gpu_mem_limit=args.gpu_mem_limit
     )
     full_audio = []
-    for chunk in infer.infer_stream(args.ref_audio, args.ref_text, args.ref_lang, args.text, args.lang, pause_length=args.pause_length):
+    for chunk in infer.infer_stream(args.ref_audio, args.ref_text, args.ref_lang, args.text, args.lang,
+                                    top_k=args.top_k, temperature=args.temperature,
+                                    repetition_penalty=args.repetition_penalty,
+                                    pause_length=args.pause_length):
         full_audio.append(chunk)
     if full_audio:
         sf.write(args.output, np.concatenate(full_audio), infer.hps["data"]["sampling_rate"])

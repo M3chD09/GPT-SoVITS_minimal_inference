@@ -37,6 +37,8 @@ dependencies = [
     # ONNX / TensorRT
     "onnxruntime-gpu; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
     "onnxruntime; platform_machine == 'aarch64' or platform_machine == 'arm64'",
+    # >=0.5.1 required for onnx>=1.19 dtype map (float4_e2m1fn / float8_e8m0fnu); ml_dtypes 0.5.4+ needs numpy 2.1 on py3.13+, and 0.6+ requires numpy>=2.0 (pep398) always — both conflict with the locked numpy<2.0, so cap at 0.5.3
+    "ml-dtypes>=0.5.1,<0.5.4; python_full_version < '3.13'",
     "onnxsim",
     "onnxconverter-common",
 
